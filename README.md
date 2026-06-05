@@ -1,4 +1,4 @@
-# GOR — GitHub Opportunity Radar
+# GOR 
 
 Charge at the right repos. At the right time.
 
