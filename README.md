@@ -40,7 +40,6 @@ Developers who want to find open-source AI/ML projects worth contributing to for
 
 - Works best with a GitHub token
 - Designed for a clean, dark GitHub-style experience
-- No build step required
 
 ## License
 
