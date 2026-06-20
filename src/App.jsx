@@ -149,12 +149,9 @@ function App() {
     <div className="app-container">
       <header className="glass-panel" style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '30px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <img src="/got_iso.png" alt="GOR Logo" style={{ height: '48px', width: 'auto', borderRadius: '8px', objectFit: 'contain' }} />
-            <div>
-              <h1 className="text-gradient" style={{ fontSize: '2rem' }}>GOR Intelligence</h1>
-              <p style={{ color: 'var(--muted)', margin: '4px 0 0 0' }}>Charge at the right repos. At the right time.</p>
-            </div>
+          <div>
+            <h1 className="text-gradient" style={{ fontSize: '2rem' }}>GOR Intelligence</h1>
+            <p style={{ color: 'var(--muted)', margin: '4px 0 0 0' }}>Charge at the right repos. At the right time.</p>
           </div>
           
           <div style={{ display: 'flex', gap: '8px', background: 'rgba(255,255,255,0.05)', padding: '6px', borderRadius: '12px' }}>

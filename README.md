@@ -1,7 +1,5 @@
 # GOR Intelligence
 
-<img src="public/got_iso.png" alt="GOR Logo" height="80" />
-
 **Charge at the right repos. At the right time.**
 
 GOR is a personal intelligence dashboard built with React + Vite that helps you find high-ROI AI/ML open-source repositories to contribute to. It replaces manual searching with deep, predictive GitHub API intelligence.
