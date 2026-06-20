@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Search, GitPullRequest, LayoutDashboard, Bookmark, 
-  RefreshCw, AlertCircle, LogOut, CheckCircle, Database
+  RefreshCw, AlertCircle, LogOut, CheckCircle, Database, ClipboardPaste
 } from 'lucide-react';
 import { 
   setGithubToken, searchRepos, analyzeOpportunity, rateLimitState 
@@ -190,14 +190,33 @@ function App() {
           <div style={{ width: '1px', height: '24px', background: 'var(--border)' }}></div>
 
           {!tokenSaved ? (
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input 
-                type="password" 
-                placeholder="GitHub PAT..." 
-                value={tokenInput}
-                onChange={e => setTokenInput(e.target.value)}
-                style={{ width: '150px' }}
-              />
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <input 
+                  type="password" 
+                  placeholder="GitHub PAT..." 
+                  value={tokenInput}
+                  onChange={e => setTokenInput(e.target.value)}
+                  style={{ width: '170px', paddingRight: '36px' }}
+                />
+                <button 
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      setTokenInput(text);
+                    } catch (err) {
+                      console.error('Failed to read clipboard', err);
+                    }
+                  }}
+                  style={{ 
+                    position: 'absolute', right: '4px', background: 'transparent', 
+                    border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: '4px', display: 'flex' 
+                  }}
+                  title="Paste from clipboard"
+                >
+                  <ClipboardPaste size={16} />
+                </button>
+              </div>
               <button className="btn" onClick={handleSaveToken}>Save</button>
             </div>
           ) : (
