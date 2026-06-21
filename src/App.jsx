@@ -9,7 +9,7 @@ import {
 import { 
   supabase, signInWithGithub, signOut, watchRepo, getWatchedRepos, updateRepoStatus,
   recordRepoSurfaced, getRepoSurfaceCounts, getCachedScore, setCachedScore,
-  submitPRFeedback
+  submitPRFeedback, getTrendingRepos
 } from './lib/supabase';
 
 const CATEGORIES = {
@@ -147,7 +147,18 @@ function App() {
         apiFilters.minStars = 10000;
       }
 
-      let repos = await searchRepos(keywords, apiFilters);
+      let repos = [];
+      if (mode === 'trending') {
+        const rawTrending = await getTrendingRepos();
+        const kwList = keywords.toLowerCase().split(' ').filter(k => k !== 'or' && k.length > 1);
+        const filtered = rawTrending.filter(r => {
+          const text = `${r.name} ${r.description}`.toLowerCase();
+          return kwList.some(k => text.includes(k)) || text.includes('ai') || text.includes('ml');
+        });
+        repos = filtered.slice(0, 20);
+      } else {
+        repos = await searchRepos(keywords, apiFilters);
+      }
 
       const scoredRepos = [];
       for (const repo of repos) {
@@ -328,6 +339,7 @@ function App() {
               <button className={`pill ${mode === 'gems' ? 'active' : ''}`} onClick={() => setMode('gems')}>💎 Hidden Gems</button>
               <button className={`pill ${mode === 'best' ? 'active' : ''}`} onClick={() => setMode('best')}>🔥 Career Giants</button>
               <button className={`pill ${mode === 'resume' ? 'active' : ''}`} onClick={() => setMode('resume')}>💼 Resume Builders</button>
+              <button className={`pill ${mode === 'trending' ? 'active' : ''}`} onClick={() => setMode('trending')}>🔥 Trending Radar</button>
             </div>
 
             <div style={{ display: 'flex', gap: '12px' }}>
@@ -450,6 +462,11 @@ function RepoCard({ data, onWatch }) {
           <a href={repo.html_url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '1.2rem', fontWeight: '600' }}>
             {repo.full_name}
           </a>
+          {repo._tier && (
+            <span style={{ marginLeft: '12px', fontSize: '0.8rem', padding: '2px 8px', background: 'rgba(255, 69, 58, 0.2)', color: '#FF453A', borderRadius: '12px', verticalAlign: 'middle' }}>
+              🔥 Trending {repo._tier === 'daily' ? 'Today' : repo._tier === 'weekly' ? 'This Week' : 'This Month'}
+            </span>
+          )}
           <div style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '4px' }}>
             ⭐ {(repo.stargazers_count / 1000).toFixed(1)}k
           </div>

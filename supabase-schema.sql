@@ -50,3 +50,29 @@ USING (true);
 -- Run these if the watched_repos table already exists
 -- ALTER TABLE public.watched_repos ADD COLUMN IF NOT EXISTS pr_url TEXT;
 -- ALTER TABLE public.watched_repos ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITH TIME ZONE;
+
+-- Schema for Python-Backed Trending Radar
+CREATE TABLE IF NOT EXISTS public.trending_radar_cache (
+  repo_full_name TEXT PRIMARY KEY,
+  language TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  stars_gained INTEGER DEFAULT 0,
+  description TEXT,
+  scraped_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.trending_radar_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public read of trending_radar_cache"
+ON public.trending_radar_cache FOR SELECT
+USING (true);
+
+-- The Python script will need a service role key to insert, or we can allow anon insert for testing.
+-- We will allow anon insert/update for local testing simplicity.
+CREATE POLICY "Allow public insert to trending_radar_cache"
+ON public.trending_radar_cache FOR INSERT
+WITH CHECK (true);
+
+CREATE POLICY "Allow public update to trending_radar_cache"
+ON public.trending_radar_cache FOR UPDATE
+USING (true);
