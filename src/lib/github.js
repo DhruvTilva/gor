@@ -80,7 +80,10 @@ export async function searchRepos(keywords, filters) {
   if (filters.language !== 'any') q += ` language:${filters.language}`;
 
   const sort = filters.sort || 'stars';
-  const data = await ghFetch(`/search/repositories?q=${encodeURIComponent(q)}&sort=${sort}&order=desc&per_page=20`);
+  // Phase 4.1: Recommendation Diversity (Sampling)
+  // Fetch a random page (1 to 3) to diversify results and prevent hammering the exact same top 20 repos
+  const page = Math.floor(Math.random() * 3) + 1;
+  const data = await ghFetch(`/search/repositories?q=${encodeURIComponent(q)}&sort=${sort}&order=desc&per_page=20&page=${page}`);
   return data.items || [];
 }
 
@@ -106,13 +109,47 @@ export async function getPRFiles(owner, repo, pullNumber) {
   }
 }
 
+export async function getOpenIssues(owner, repo) {
+  try {
+    // Core API is much safer than Search API for rate limits
+    const data = await ghFetch(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=30`);
+    return data.filter(i => !i.pull_request && i.labels.some(l => 
+      l.name.toLowerCase() === 'good first issue' || l.name.toLowerCase() === 'help wanted'
+    ));
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function getPRChecks(owner, repo, sha) {
+  try {
+    const data = await ghFetch(`/repos/${owner}/${repo}/commits/${sha}/check-runs`);
+    return data.check_runs || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function getOrgDetails(owner) {
+  try {
+    return await ghFetch(`/users/${owner}`);
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function analyzeOpportunity(repo, filters) {
-  const prs = await getClosedPRs(repo.owner.login, repo.name);
+  const [prs, openIssues, orgDetails] = await Promise.all([
+    getClosedPRs(repo.owner.login, repo.name),
+    getOpenIssues(repo.owner.login, repo.name),
+    repo.owner.type === 'Organization' ? getOrgDetails(repo.owner.login) : Promise.resolve(null)
+  ]);
   
-  // Exclude maintainer PRs to find true external contribution stats
-  const externalPRs = prs.filter(pr => 
-    ['FIRST_TIME_CONTRIBUTOR', 'NONE', 'CONTRIBUTOR'].includes(pr.author_association)
-  );
+  // Exclude maintainer PRs and bots to find true external human contribution stats
+  const externalPRs = prs.filter(pr => {
+    if (pr.user?.type === 'Bot' || pr.user?.login?.toLowerCase().endsWith('[bot]')) return false;
+    return ['FIRST_TIME_CONTRIBUTOR', 'NONE', 'CONTRIBUTOR'].includes(pr.author_association);
+  });
 
   const mergedExternal = externalPRs.filter(pr => pr.merged_at !== null);
   const mergeRate = externalPRs.length > 0 ? (mergedExternal.length / externalPRs.length) * 100 : 0;
@@ -136,42 +173,98 @@ export async function analyzeOpportunity(repo, filters) {
     avgTtmDays = ttmSum / mergedExternal.length;
   }
 
-  // Typo-Trap Detection (Check files of the most recent first-timer PR)
+  // Typo-Trap Detection (Check files of up to 3 most recent first-timer PRs)
   let codeVsDocs = 'Unknown';
   let isTypoTrap = false;
   if (firstTimerPRs.length > 0) {
-    const latestPR = firstTimerPRs[0];
-    const files = await getPRFiles(repo.owner.login, repo.name, latestPR.number);
-    if (files.length > 0) {
-      const codeFiles = files.filter(f => f.filename.match(/\.(py|js|ts|jsx|tsx|go|rs|cpp|c|java|rb)$/i));
-      const codePercentage = (codeFiles.length / files.length) * 100;
-      codeVsDocs = `${Math.round(codePercentage)}% Code`;
-      if (codePercentage === 0) {
+    const prsToCheck = firstTimerPRs.slice(0, 3);
+    let zeroCodePrCount = 0;
+    let totalCodePercentage = 0;
+
+    for (const pr of prsToCheck) {
+      const files = await getPRFiles(repo.owner.login, repo.name, pr.number);
+      if (files.length > 0) {
+        const codeFiles = files.filter(f => f.filename.match(/\.(py|js|ts|jsx|tsx|go|rs|cpp|c|java|rb)$/i));
+        const codePercentage = (codeFiles.length / files.length) * 100;
+        totalCodePercentage += codePercentage;
+        if (codePercentage === 0) {
+          zeroCodePrCount++;
+        }
+      }
+    }
+
+    if (prsToCheck.length > 0) {
+      codeVsDocs = `${Math.round(totalCodePercentage / prsToCheck.length)}% Code`;
+      const zeroCodeRatio = zeroCodePrCount / prsToCheck.length;
+      if (zeroCodeRatio >= 0.7) {
         isTypoTrap = true;
       }
     }
   }
 
+  // Phase 3.2: CLA Detection
+  let requiresCLA = false;
+  if (firstTimerPRs.length > 0) {
+    const latestPR = firstTimerPRs[0];
+    const checks = await getPRChecks(repo.owner.login, repo.name, latestPR.head.sha);
+    const claNames = ['cla/google', 'cla-assistant', 'license/cla', 'easycla', 'cla check'];
+    requiresCLA = checks.some(check => 
+      claNames.some(cla => check.name.toLowerCase().includes(cla))
+    );
+  }
+
   // Tier-1 Org Status
   const isVipOrg = VIP_ORGS.includes(repo.owner.login.toLowerCase());
+  const isLivePrestigeOrg = orgDetails && (orgDetails.followers > 10000 || orgDetails.is_verified);
+
+  // Analyze Open Issues
+  let hasStaleIssues = false;
+  let hasFreshIssues = false;
+  if (openIssues.length > 0) {
+    const oldestIssueDate = new Date(openIssues[openIssues.length - 1].created_at);
+    const daysOld = (new Date() - oldestIssueDate) / 86400000;
+    if (daysOld > 90) {
+      hasStaleIssues = true;
+    } else {
+      hasFreshIssues = true;
+    }
+  }
 
   // Calculate Scores
   let oppScore = 0;
-  if (firstTimerPRs.length > 0) oppScore += 40;
-  if (firstTimerPRs.length >= 3) oppScore += 20;
+  
+  // Phase 2.1: Scaled First-Timer Credit
+  if (firstTimerPRs.length >= 1) {
+    oppScore += 30; // Base credit
+    const additionalPRs = firstTimerPRs.length - 1;
+    const scaledBonus = Math.min(50, additionalPRs * 10); // +10 per PR, max +50
+    oppScore += scaledBonus;
+  }
+
   if (mergeRate > 50) oppScore += 20;
-  if (avgTtmDays < 7 && avgTtmDays > 0) oppScore += 20;
+  // REMOVED TTM FROM OPPORTUNITY SCORE (Phase 5: Decoupled)
+  
+  // Phase 2.2: Good First Issue Fetching
+  if (hasFreshIssues) oppScore += 15;
+  if (hasStaleIssues && !hasFreshIssues) oppScore -= 10;
+
   if (isTypoTrap) oppScore = Math.max(0, oppScore - 50); // Massive penalty for typo traps
+  if (requiresCLA) oppScore = Math.max(0, oppScore - 20); // Friction penalty
 
   let careerScore = 0;
   if (isVipOrg) careerScore += 50;
+  if (isLivePrestigeOrg && !isVipOrg) careerScore += 25; // Live prestige fallback
   if (repo.stargazers_count > 10000 && !filters.ignoreStarScore) careerScore += 25;
   if (!isTypoTrap && firstTimerPRs.length > 0) careerScore += 25;
 
   let friendlinessScore = 0;
-  if (avgTtmDays < 3 && avgTtmDays > 0) friendlinessScore += 40;
-  else if (avgTtmDays < 7) friendlinessScore += 20;
-  if (mergeRate > 60) friendlinessScore += 40;
+  if (isTypoTrap && avgTtmDays < 0.5) friendlinessScore -= 40; // Penalize trivial instant merges
+
+  if (avgTtmDays < 3 && avgTtmDays >= 0) friendlinessScore += 60; // Boosted to replace MergeRate double-counting
+  else if (avgTtmDays < 7) friendlinessScore += 30; // Boosted
+  
+  // REMOVED MERGE RATE FROM FRIENDLINESS SCORE (Phase 5: Decoupled)
+
   if (repo.has_wiki || repo.has_pages) friendlinessScore += 20;
 
   // Placeholder for Momentum (will be populated by Supabase if available)
@@ -188,7 +281,9 @@ export async function analyzeOpportunity(repo, filters) {
       avgTtmDays: Math.round(avgTtmDays * 10) / 10,
       codeVsDocs,
       isTypoTrap,
-      isVipOrg
+      isVipOrg,
+      goodFirstIssues: openIssues.length,
+      requiresCLA
     },
     scores: {
       total: totalScore,

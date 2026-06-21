@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   Search, GitPullRequest, LayoutDashboard, Bookmark, 
   RefreshCw, AlertCircle, LogOut, CheckCircle, Database, ClipboardPaste
@@ -6,7 +6,11 @@ import {
 import { 
   setGithubToken, searchRepos, analyzeOpportunity, rateLimitState 
 } from './lib/github';
-import { supabase, signInWithGithub, signOut, watchRepo, getWatchedRepos, updateRepoStatus } from './lib/supabase';
+import { 
+  supabase, signInWithGithub, signOut, watchRepo, getWatchedRepos, updateRepoStatus,
+  recordRepoSurfaced, getRepoSurfaceCounts, getCachedScore, setCachedScore,
+  submitPRFeedback
+} from './lib/supabase';
 
 const CATEGORIES = {
   agents: { label: '🤖 Agents', keywords: 'AI agent autonomous llm' },
@@ -32,9 +36,8 @@ function App() {
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [rateLimit, setRateLimit] = useState(null);
 
-  const [filters, setFilters] = useState({
+  const [filters] = useState({
     minStars: 1000,
     firstTimerDays: 14,
     language: 'any',
@@ -55,23 +58,25 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (user && currentView === 'pipeline') {
-      loadPipeline();
-    }
-  }, [user, currentView]);
-
   const loadPipeline = async () => {
     try {
       setLoading(true);
       const data = await getWatchedRepos(user.id);
       setPipelineRepos(data);
     } catch (err) {
-      setError(err.message);
+      console.error('Failed to load pipeline:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  // eslint-disable-next-line
+  useEffect(() => {
+    if (user && currentView === 'pipeline') {
+      loadPipeline();
+    }
+    // eslint-disable-next-line
+  }, [user, currentView]);
 
   const handleSaveToken = () => {
     if (tokenInput.trim()) {
@@ -96,6 +101,19 @@ function App() {
 
   const handleLogout = async () => {
     await signOut();
+  };
+
+  const handleSubmitPR = async (repo) => {
+    const prUrl = prompt(`Enter the URL of your merged Pull Request for ${repo.repo_full_name}:`);
+    if (prUrl) {
+      try {
+        await submitPRFeedback(user.id, repo.repo_full_name, prUrl);
+        loadPipeline();
+        alert('Thank you! This data will help train future GOR versions.');
+      } catch (err) {
+        alert('Failed to submit PR feedback: ' + err.message);
+      }
+    }
   };
 
   const fetchResults = async () => {
@@ -133,19 +151,51 @@ function App() {
 
       const scoredRepos = [];
       for (const repo of repos) {
-        if (repo.archived || repo.disabled || repo.has_pull_requests === false) continue;
+        if (
+          repo.archived || 
+          repo.disabled || 
+          repo.has_pull_requests === false ||
+          repo.is_template === true ||
+          repo.license === null
+        ) continue;
         try {
-          const analysis = await analyzeOpportunity(repo, apiFilters);
-          if (analysis) scoredRepos.push(analysis);
+          // Phase 6.2: Check cache before running expensive API analysis
+          const cached = await getCachedScore(repo.full_name);
+          if (cached) {
+            scoredRepos.push(cached);
+          } else {
+            const analysis = await analyzeOpportunity(repo, apiFilters);
+            if (analysis) {
+              await setCachedScore(repo.full_name, analysis);
+              scoredRepos.push(analysis);
+            }
+          }
         } catch (err) {
           console.warn(`Skipping repo ${repo.full_name} due to analysis error:`, err.message);
           continue;
         }
       }
       
+      const repoNames = scoredRepos.map(r => r.repo.full_name);
+      const surfaceCounts = await getRepoSurfaceCounts(repoNames);
+      
+      // Apply Cooldown Penalty
+      for (const result of scoredRepos) {
+        const surfaces = surfaceCounts[result.repo.full_name] || 0;
+        result.stats.surfaceCount = surfaces;
+        // If shown more than 5 times globally, start applying a severe cooldown penalty
+        if (surfaces > 5) {
+          result.scores.total = Math.max(0, result.scores.total - (surfaces * 10));
+        }
+      }
+
       scoredRepos.sort((a, b) => b.scores.total - a.scores.total);
       setResults(scoredRepos);
-      setRateLimit(rateLimitState);
+
+      // Record that we surfaced these to a user
+      for (const result of scoredRepos.slice(0, 10)) { // Only record the top 10 actually seen
+        recordRepoSurfaced(result.repo.full_name);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -153,6 +203,7 @@ function App() {
     }
   };
 
+  // eslint-disable-next-line
   useEffect(() => {
     if (currentView === 'search') {
       fetchResults();
@@ -358,10 +409,18 @@ function App() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn" onClick={() => updateRepoStatus(user.id, repo.repo_full_name, 'contributing')}>Contributing</button>
-                        <button className="btn btn-success" onClick={() => updateRepoStatus(user.id, repo.repo_full_name, 'merged')}>
-                          <CheckCircle size={16} /> Merged
-                        </button>
+                        {repo.status !== 'submitted' ? (
+                          <>
+                            <button className="btn" onClick={() => updateRepoStatus(user.id, repo.repo_full_name, 'contributing')}>Contributing</button>
+                            <button className="btn btn-success" onClick={() => handleSubmitPR(repo)}>
+                              <CheckCircle size={16} /> I Submitted a PR!
+                            </button>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: '0.85rem', color: 'var(--success)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <CheckCircle size={16} /> Feedback Recorded
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -395,8 +454,15 @@ function RepoCard({ data, onWatch }) {
             ⭐ {(repo.stargazers_count / 1000).toFixed(1)}k
           </div>
         </div>
-        <div className={`score-badge ${getScoreClass(scores.total)}`}>
-          GOR {scores.total}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+          <div className={`score-badge ${getScoreClass(scores.total)}`}>
+            GOR {scores.total}
+          </div>
+          {stats.surfaceCount > 5 && (
+            <div style={{ fontSize: '0.7rem', color: 'var(--danger)', fontWeight: '600', padding: '2px 6px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '4px' }}>
+              Cooldown Penalty
+            </div>
+          )}
         </div>
       </div>
 
@@ -407,6 +473,12 @@ function RepoCard({ data, onWatch }) {
       {stats.isTypoTrap && (
         <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--danger)', padding: '10px', borderRadius: '8px', fontSize: '0.85rem', color: '#fca5a5' }}>
           ⚠️ <strong>Typo-Trap Warning:</strong> Recent first-timer PRs only modified non-code files. High risk of low career ROI.
+        </div>
+      )}
+
+      {stats.requiresCLA && (
+        <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid #f59e0b', padding: '10px', borderRadius: '8px', fontSize: '0.85rem', color: '#fcd34d' }}>
+          📝 <strong>CLA Required:</strong> This repository requires a Contributor License Agreement, adding friction to your first PR.
         </div>
       )}
 
@@ -454,6 +526,12 @@ function RepoCard({ data, onWatch }) {
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase' }}>Code PRs</div>
           <div style={{ fontWeight: '600' }}>{stats.codeVsDocs}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase' }}>Good First Issues</div>
+          <div style={{ fontWeight: '600', color: stats.goodFirstIssues > 0 ? 'var(--success)' : 'var(--text)' }}>
+            {stats.goodFirstIssues} Open
+          </div>
         </div>
       </div>
 
