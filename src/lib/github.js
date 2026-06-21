@@ -23,7 +23,10 @@ export async function ghFetch(path) {
   const headers = { 'Accept': 'application/vnd.github+json' };
   if (githubToken) headers['Authorization'] = `Bearer ${githubToken}`;
 
-  const res = await fetch(`${GH_BASE}${path}`, { headers });
+  const url = `${GH_BASE}${path}`;
+  console.log('GitHub Request:', url);
+
+  const res = await fetch(url, { headers });
   rateLimitState.remaining = res.headers.get('X-RateLimit-Remaining');
   rateLimitState.reset = res.headers.get('X-RateLimit-Reset');
 
@@ -31,7 +34,21 @@ export async function ghFetch(path) {
     if (res.status === 403 && res.headers.get('X-RateLimit-Remaining') === '0') {
       throw new Error('GitHub API rate limit exceeded.');
     }
-    throw new Error(`GitHub API error: ${res.status}`);
+    
+    // Read body text for diagnostic logging
+    let responseBody = '';
+    try {
+      responseBody = await res.text();
+    } catch (e) {}
+
+    console.error('GitHub API Failure', {
+      url,
+      status: res.status,
+      statusText: res.statusText,
+      responseBody
+    });
+
+    throw new Error(`GitHub API error: ${res.status}\nDetails: ${responseBody.substring(0, 100)}`);
   }
   return res.json();
 }
@@ -46,19 +63,38 @@ export async function searchRepos(keywords, filters) {
   const keywordList = keywords.split(' ');
   const primary = keywordList[0];
   let q = `${primary} in:name,description,topics`;
-  q += ` stars:>=${filters.minStars}`;
+  
+  if (filters.maxStars) {
+    q += ` stars:${filters.minStars}..${filters.maxStars}`;
+  } else {
+    q += ` stars:>=${filters.minStars}`;
+  }
+  
   q += ` pushed:>${daysAgo(30)}`;
+  
+  if (filters.createdAfter) {
+    q += ` created:>${filters.createdAfter}`;
+  }
+  
   if (filters.excludeForks) q += ' fork:false';
   if (filters.language !== 'any') q += ` language:${filters.language}`;
 
-  const data = await ghFetch(`/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=20`);
+  const sort = filters.sort || 'stars';
+  const data = await ghFetch(`/search/repositories?q=${encodeURIComponent(q)}&sort=${sort}&order=desc&per_page=20`);
   return data.items || [];
 }
 
 export async function getClosedPRs(owner, repo) {
-  // Fetch up to 100 recent closed PRs
-  const page1 = await ghFetch(`/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`);
-  return page1;
+  try {
+    const page1 = await ghFetch(`/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`);
+    return page1;
+  } catch (e) {
+    if (e.message.includes('404') || e.message.includes('410') || e.message.includes('403')) {
+      console.warn(`PRs disabled or inaccessible for ${owner}/${repo}`);
+      return [];
+    }
+    throw e;
+  }
 }
 
 export async function getPRFiles(owner, repo, pullNumber) {
@@ -129,7 +165,7 @@ export async function analyzeOpportunity(repo, filters) {
 
   let careerScore = 0;
   if (isVipOrg) careerScore += 50;
-  if (repo.stargazers_count > 10000) careerScore += 25;
+  if (repo.stargazers_count > 10000 && !filters.ignoreStarScore) careerScore += 25;
   if (!isTypoTrap && firstTimerPRs.length > 0) careerScore += 25;
 
   let friendlinessScore = 0;

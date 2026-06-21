@@ -24,7 +24,7 @@ function App() {
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaved, setTokenSaved] = useState(false);
   const [category, setCategory] = useState('agents');
-  const [mode, setMode] = useState('best');
+  const [mode, setMode] = useState('probability');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [results, setResults] = useState([]);
@@ -104,15 +104,43 @@ function App() {
     setResults([]);
     try {
       const keywords = searchQuery || CATEGORIES[category].keywords;
-      let repos = await searchRepos(keywords, filters);
       
-      if (mode === 'gems') repos = repos.filter(r => r.stargazers_count <= 5000);
+      const apiFilters = { ...filters };
+      if (mode === 'best') {
+        apiFilters.minStars = 5000;
+      } else if (mode === 'probability') {
+        apiFilters.minStars = 300;
+        apiFilters.maxStars = 5000;
+        apiFilters.ignoreStarScore = true;
+      } else if (mode === 'rising') {
+        apiFilters.minStars = 100;
+        apiFilters.maxStars = 5000;
+        apiFilters.sort = 'updated';
+        const d = new Date();
+        d.setFullYear(d.getFullYear() - 1);
+        apiFilters.createdAfter = d.toISOString().split('T')[0];
+        apiFilters.ignoreStarScore = true;
+      } else if (mode === 'gems') {
+        apiFilters.minStars = 100;
+        apiFilters.maxStars = 2000;
+        apiFilters.sort = 'updated';
+        apiFilters.ignoreStarScore = true;
+      } else if (mode === 'resume') {
+        apiFilters.minStars = 10000;
+      }
+
+      let repos = await searchRepos(keywords, apiFilters);
 
       const scoredRepos = [];
       for (const repo of repos) {
-        if (repo.archived) continue;
-        const analysis = await analyzeOpportunity(repo, filters);
-        scoredRepos.push(analysis);
+        if (repo.archived || repo.disabled || repo.has_pull_requests === false) continue;
+        try {
+          const analysis = await analyzeOpportunity(repo, apiFilters);
+          if (analysis) scoredRepos.push(analysis);
+        } catch (err) {
+          console.warn(`Skipping repo ${repo.full_name} due to analysis error:`, err.message);
+          continue;
+        }
       }
       
       scoredRepos.sort((a, b) => b.scores.total - a.scores.total);
@@ -243,9 +271,12 @@ function App() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button className={`pill ${mode === 'best' ? 'active' : ''}`} onClick={() => setMode('best')}>🔥 Best Now</button>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button className={`pill ${mode === 'probability' ? 'active' : ''}`} onClick={() => setMode('probability')}>🎯 Highest Merge Probability</button>
+              <button className={`pill ${mode === 'rising' ? 'active' : ''}`} onClick={() => setMode('rising')}>🚀 Rising Fast</button>
               <button className={`pill ${mode === 'gems' ? 'active' : ''}`} onClick={() => setMode('gems')}>💎 Hidden Gems</button>
+              <button className={`pill ${mode === 'best' ? 'active' : ''}`} onClick={() => setMode('best')}>🔥 Career Giants</button>
+              <button className={`pill ${mode === 'resume' ? 'active' : ''}`} onClick={() => setMode('resume')}>💼 Resume Builders</button>
             </div>
 
             <div style={{ display: 'flex', gap: '12px' }}>
@@ -400,7 +431,25 @@ function RepoCard({ data, onWatch }) {
         </div>
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase' }}>First Timer PRs</div>
-          <div style={{ fontWeight: '600' }}>{stats.firstTimerPRs.length}</div>
+          <div style={{ fontWeight: '600' }}>
+            {stats.firstTimerPRs.length}
+            {stats.firstTimerPRs.length > 0 && (
+              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '4px' }}>
+                {stats.firstTimerPRs.slice(0, 3).map(pr => (
+                  <a 
+                    key={pr.id} 
+                    href={pr.html_url} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    style={{ fontSize: '0.75rem', color: 'var(--accent)', textDecoration: 'none', background: 'rgba(255,255,255,0.1)', padding: '2px 4px', borderRadius: '4px' }}
+                    title={pr.title}
+                  >
+                    #{pr.number}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase' }}>Code PRs</div>
